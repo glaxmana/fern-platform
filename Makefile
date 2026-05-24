@@ -3,10 +3,11 @@
 
 # Import all modular Makefiles
 include Makefile.core
-include Makefile.test  
+include Makefile.test
 include Makefile.docker
 include Makefile.k8s
 include Makefile.ci
+include Makefile.web
 
 # Default target
 .DEFAULT_GOAL := help
