@@ -1,7 +1,7 @@
 package domains
 
 import (
-	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 
@@ -76,9 +76,9 @@ type DomainFactory struct {
 	summaryHandler *summaryInterfaces.SummaryHandler
 
 	// Integrations domain
-	jiraConnectionService    *integrations.JiraConnectionService
-	jiraFieldMappingService  *integrations.JiraFieldMappingService
-	coverageService          *integrations.CoverageService
+	jiraConnectionService   *integrations.JiraConnectionService
+	jiraFieldMappingService *integrations.JiraFieldMappingService
+	coverageService         *integrations.CoverageService
 }
 
 // NewDomainFactory creates a new domain factory
@@ -273,25 +273,17 @@ func (f *DomainFactory) initIntegrationsDomain() {
 	// Create JIRA client
 	jiraClient := integrations.NewDefaultJiraClient()
 
-	// Load the credential-encryption key from env. Required: 32 bytes,
-	// base64-encoded. The previous implementation used a placeholder
-	// string in source which left every Jira token effectively
-	// unencrypted to anyone with the binary. We fail fast at startup if
-	// the env var is missing or malformed so a misconfigured deploy
-	// can't silently fall back to insecure behavior.
-	encryptionKey, err := loadJiraEncryptionKey()
-	if err != nil {
-		// Panic at startup so the deploy fails loudly. This runs from
-		// main.go's domain wiring before the HTTP server starts.
-		panic(fmt.Errorf("jira: %w", err))
+	keyHex := os.Getenv("JIRA_ENCRYPTION_KEY")
+	if keyHex == "" {
+		panic("JIRA_ENCRYPTION_KEY environment variable is not set; generate with: openssl rand -hex 32")
 	}
-
-	// Create JIRA connection service
-	f.jiraConnectionService = integrations.NewJiraConnectionService(
-		jiraConnRepo,
-		jiraClient,
-		encryptionKey,
-	)
+	encryptionKey, err := hex.DecodeString(keyHex)
+	if err != nil {
+		panic(fmt.Sprintf("JIRA_ENCRYPTION_KEY is not valid hex: %v", err))
+	}
+	if len(encryptionKey) != 32 {
+		panic(fmt.Sprintf("JIRA_ENCRYPTION_KEY must decode to exactly 32 bytes, got %d", len(encryptionKey)))
+	}
 
 	// Create JIRA field mapping repo and service
 	jiraFieldMappingRepo := integrationsInfra.NewGormJiraFieldMappingRepository(f.db)
@@ -300,37 +292,6 @@ func (f *DomainFactory) initIntegrationsDomain() {
 	// Create coverage service (reuses the same connection repo, JIRA client, and encryption key)
 	tagRepo := tagsInfra.NewGormTagRepository(f.db)
 	f.coverageService = integrations.NewCoverageService(jiraConnRepo, jiraClient, tagRepo, f.jiraFieldMappingService, encryptionKey)
-}
-
-// loadJiraEncryptionKey reads JIRA_ENCRYPTION_KEY (base64 → 32 bytes).
-// Two failure modes are surfaced explicitly so deploys can debug:
-//   - env var unset or empty
-//   - decoded value isn't exactly 32 bytes (AES-256 requirement)
-//
-// In dev/test contexts with no Jira usage, set the env var to the
-// base64 of any 32-byte string — it's only consulted when a Jira
-// credential is encrypted/decrypted, but it's loaded eagerly so
-// problems surface at boot rather than first-use.
-func loadJiraEncryptionKey() ([]byte, error) {
-	raw := os.Getenv("JIRA_ENCRYPTION_KEY")
-	if raw == "" {
-		return nil, fmt.Errorf(
-			"JIRA_ENCRYPTION_KEY env var is required; " +
-				"set it to a base64-encoded 32-byte key " +
-				"(e.g. `openssl rand -base64 32`)",
-		)
-	}
-	key, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
-		return nil, fmt.Errorf("JIRA_ENCRYPTION_KEY is not valid base64: %w", err)
-	}
-	if len(key) != 32 {
-		return nil, fmt.Errorf(
-			"JIRA_ENCRYPTION_KEY must decode to exactly 32 bytes, got %d",
-			len(key),
-		)
-	}
-	return key, nil
 }
 
 // GetJiraConnectionService returns the JIRA connection service
